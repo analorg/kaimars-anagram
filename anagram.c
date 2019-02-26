@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include <sys/sysinfo.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,13 +25,52 @@ void *myThreadFun(void *vargp)
     printf("Thread started. Global: %d\n", ++g);
 }
 
+struct Node 
+{ 
+    // Any data type can be stored in this node 
+    void  *data; 
+    struct Node *next; 
+}; 
+
 struct Segment{
     unsigned char *data;
     int start;
     int end;
     int id;
     int anagram_length;
+    struct Node *result;
 };
+
+/* Function to add a node at the beginning of Linked List. 
+   This function expects a pointer to the data to be added 
+   and size of the data type */
+void push(struct Node** head_ref, void *new_data, size_t data_size) 
+{ 
+    // Allocate memory for node 
+    struct Node* new_node = (struct Node*)malloc(sizeof(struct Node)); 
+  
+    new_node->data  = malloc(data_size); 
+    new_node->next = (*head_ref); 
+  
+    // Copy contents of new_data to newly allocated memory. 
+    // Assumption: char takes 1 byte. 
+    int i; 
+    for (i=0; i<data_size; i++) 
+        *(char *)(new_node->data + i) = *(char *)(new_data + i); 
+  
+    // Change head pointer as new node is added at the beginning 
+    (*head_ref)    = new_node; 
+} 
+
+struct Node* tail_of(struct Node *node) 
+{ 
+    while (node->next != NULL) 
+    { 
+        node = node->next; 
+    } 
+    return node;
+} 
+// -------------------------------------------------------------------------
 
 //void processFile()
 //{
@@ -159,40 +199,42 @@ void processFile_memmap(char * file_name)
 #define NUM_THREADS 2
 
 void *perform_work(void *arguments){
-  struct Segment segment = *((struct Segment *)arguments);
-  printf("THREAD %d: Started working on bytes [%d..%d]\n", segment.id, segment.start, segment.end);
+    struct Segment *segment = arguments;
+  //struct Segment segment = &arguments;//*((struct Segment *)arguments);
+  printf("THREAD %d: Started working on bytes [%d..%d] Data %p, %p\n", segment->id, segment->start, segment->end, arguments, &segment);
+//  printf("THREAD %d: Started working on bytes [%d..%d] Data %p, %p\n", segment.id, segment.start, segment.end, arguments, &segment);
     unsigned char local_mask[256];
-    int word_start = segment.start;
-    for (int i = segment.start; i <= segment.end; i++) {
-        switch(segment.data[i])
+    int word_start = segment->start;
+    for (int i = segment->start; i <= segment->end; i++) {
+        switch(segment->data[i])
         {
             case '\r':
             case '\n':
                 //printf("\n%d:", i+1);
-                if (segment.anagram_length == i - word_start)
+                if (segment->anagram_length == i - word_start)
                 {
                     // printf("Found candidate of same length ");
                     int found = 1;
                     for(int j = word_start; j < i; j++)
                     {
-                        //printf("%c", segment.data[j]);
-                        if(!mask[segment.data[j]]){
+                        //printf("%c", segment->data[j]);
+                        if(!mask[segment->data[j]]){
                             found = 0;
                             break;
                         }
                     }
                     if (found){
-                        for(int j = word_start; j < i; j++){
-                            printf("%c", segment.data[j]);
-                        }
-                        printf(" Character set MATCH\n");
+                        // for(int j = word_start; j < i; j++){
+                        //     printf("%c", segment->data[j]);
+                        // }
+                        // printf(" Character set MATCH\n");
                         // count characters
                         for(int j = 0; j< used_chars; j++){
                             local_mask[mask_index[j]] = 0;
                         }
                         for(int j = word_start; j < i; j++)
                         {
-                            local_mask[segment.data[j]]++;
+                            local_mask[segment->data[j]]++;
                         }
                         for(int j = 0; j< used_chars; j++){
                             if (local_mask[mask_index[j]] != mask[mask_index[j]]){
@@ -201,8 +243,21 @@ void *perform_work(void *arguments){
                             }
                         }
                     }
+                    // https://www.geeksforgeeks.org/generic-linked-list-in-c-2/
                     if (found){
-                        printf(" ANAGRAM MATCH\n");
+                        printf(" ANAGRAM MATCH at %d\n", word_start);
+                        //printf(" Result location %p\n", &segment->result);
+                        //printf(" Result %p\n", segment->result);
+                        push(&segment->result, &segment->data[word_start], segment->anagram_length+1);
+                        // make proper null-terminated string
+                        char *s = (char *)segment->result->data;
+                        s[segment->anagram_length] = '\0';
+                        printf(" Result %s\n", s);
+                        // struct Node *start = NULL;
+                        // printf(" Result %p\n", start);
+                        // push(&start, &word_start, sizeof(int)); 
+                        // printf(" Result %p\n", start);
+
                     }
                     else{
                         //printf("... No match\n");
@@ -213,14 +268,15 @@ void *perform_work(void *arguments){
                 break;
             default:
                 break;
-                //printf("%c", segment.data[i]);
+                //printf("%c", segment->data[i]);
                 //printf("%d ", i);
         }
     }
-  //printf("THREAD %d: Ended.\n", segment.id);
+  //printf("THREAD %d: Ended.\n", segment->id);
+  
 }
 
-void doit(char * anagram)
+struct Node *doit(char * anagram, int thread_count)
 {
   printf("Searching for %s\n", anagram);
   for (int i = 0; anagram[i] != 0; i++){
@@ -236,22 +292,22 @@ void doit(char * anagram)
     }
   }
 
-  pthread_t threads[NUM_THREADS];
-  int segment_size = size/NUM_THREADS;
+  pthread_t threads[thread_count];
+  int segment_size = size/thread_count;
   int next_segment_start = 0;
   int segment_end = 0;
-  struct Segment thread_segments[NUM_THREADS];
+  struct Segment thread_segments[thread_count];
 
   //create all threads one by one
-  for (int i = 0; i < NUM_THREADS; i++) {
-    if (i == NUM_THREADS - 1)
+  for (int i = 0; i < thread_count; i++) {
+    if (i == thread_count - 1)
     {
         segment_end = size-1;
     } else
     {
         segment_end = next_segment_start + segment_size;
         // align the segments with line breaks
-        while(segment_end < size && file_content[segment_end] != '\n')
+        while(file_content[segment_end] != '\n' && segment_end < size)
         {
             segment_end++;
         }
@@ -261,19 +317,27 @@ void doit(char * anagram)
     thread_segments[i].end = segment_end;
     thread_segments[i].data = file_content;
     thread_segments[i].anagram_length = strlen(anagram);
+    thread_segments[i].result = NULL;
 //    printf("IN MAIN: Creating thread %d (bytes %d .. %d)\n", i, next_segment_start, segment_end);
+    printf("IN MAIN: Creating thread %d (bytes %d .. %d), Data @%p\n", i, next_segment_start, segment_end, &thread_segments[i]);
     assert(!pthread_create(&threads[i], NULL, perform_work, &thread_segments[i]));
     next_segment_start = segment_end + 1;
   }
 
   //printf("IN MAIN: All threads are created.\n");
 
-  //wait for each thread to complete
-  for (int i = 0; i < NUM_THREADS; i++) {
+  // wait for each thread to complete and merge the results
+  struct Node *result = NULL;
+  for (int i = 0; i < thread_count; i++) {
     assert(!pthread_join(threads[i], NULL));
-//    printf("IN MAIN: Thread %d has ended.\n", i);
+    //total_results += vector_total(&(threads[i].results));
+    if (thread_segments[i].result != NULL){
+        printf("IN MAIN: Thread %d found matches.\n", i);
+        tail_of(thread_segments[i].result)->next = result;
+        result = thread_segments[i].result;
+    }
   }
-
+  return result;
 //  printf("MAIN program has ended.\n");
 }
 #define MAXCHAR 1000
@@ -283,6 +347,8 @@ int main(int argc, char **argv)
 {
     struct timeval tval_before, tval_after, tval_result;
     gettimeofday(&tval_before, NULL);
+
+    int cpu_count = get_nprocs();
 
 //    FILE *fp;
 //    char str[MAXCHAR];
@@ -323,11 +389,16 @@ int main(int argc, char **argv)
     // processFile_fgets();        // 0.024
      processFile_memmap(argv[1]);       // 0.0057
     // processFile_singlebuffer(); // 0.0067
-    doit(argv[2]);
+    struct Node *result = doit(argv[2], cpu_count);
 
    gettimeofday(&tval_after, NULL);
    timersub(&tval_after, &tval_before, &tval_result);
    printf("Time elapsed: %ld.%06ld\n", (long int)tval_result.tv_sec, (long int)tval_result.tv_usec);
-
+   while (result != NULL) 
+   { 
+        printf(" %s\n", (char *)result->data);
+        // free result
+        result = result->next; 
+   } 
    exit(EXIT_SUCCESS);
 }
