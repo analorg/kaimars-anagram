@@ -1,333 +1,263 @@
 #define _GNU_SOURCE
+#include <sys/sysinfo.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/time.h>
 #include <assert.h>
-#include <unistd.h>  //Header file for sleep(). man 3 sleep for details.
 #include <pthread.h>
-
 #include <fcntl.h>
-#include <sys/types.h>
 #include <sys/stat.h>
-// #include <sys/io.h>
 #include <sys/mman.h>
-// Let us create a global variable to change it in threads
-int g = 0;
 
-char buffer[2*1024*1024];
+#pragma region Basic Data structures and memory management routines
 
-// A normal C function that is executed as a thread
-// when its name is specified in pthread_create()
-void *myThreadFun(void *vargp)
+#define handle_error(msg) \
+    do { perror(msg); exit(EXIT_FAILURE); } while (0)
+
+static void* safe_malloc(size_t n, unsigned long line)
 {
-    printf("Thread started. Global: %d\n", ++g);
+    void* p = malloc(n);
+    if (!p)
+    {
+        fprintf(stderr, "[%s:%ul]Out of memory(%ul bytes)\n",
+                __FILE__, line, (unsigned long)n);
+        exit(EXIT_FAILURE);
+    }
+    return p;
 }
+#define SAFEMALLOC(n) safe_malloc(n, __LINE__);
 
-struct Segment{
-    unsigned char *data;
-    int start;
-    int end;
-    int id;
-    int anagram_length;
+
+struct Node // Linked list element
+{
+    // Any data type can be stored in this node
+    void  *data;
+    struct Node *next;
 };
 
-//void processFile()
-//{
-//    FILE *fp;
-//    char *line = NULL;
-//    size_t len = 0;
-//    ssize_t read;
-//
-//   fp = fopen("lemmad.txt", "r");
-//    if (fp == NULL)
-//        exit(EXIT_FAILURE);
-//
-//   while ((read = getline(&line, &len, fp)) != -1) {
-//        // printf("Retrieved line of length %zu :\n", read);
-//        //printf("%s", line);
-//   }
-//   free(line);
-//   fclose(fp);
-//}
-
-#define TARGET_LENGTH 4
-unsigned char *file_content;
-int size;
-unsigned char mask[256];
-unsigned char mask_index[256];
-int used_chars;
-
-void processFile_singlebuffer()
+// Adds new node to the top of linked list referenced by head_ref.
+void push(struct Node** head_ref, void *data)
 {
+    struct Node* new_node = (struct Node*) SAFEMALLOC(sizeof(struct Node));
+    new_node->data = data;
+    new_node->next = (*head_ref);
+    // Change head pointer as new node is added at the beginning
+    (*head_ref) = new_node;
+}
 
-    FILE *f = fopen("lemmad.txt", "rb");
-    // 0.0022, koos skänniga 0.007
-    fseek(f, 0, SEEK_END);
-    long fsize = ftell(f);
-    fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
+// Removes topmost element of linked list referenced by head_ref.
+// Returns data value of removed element.
+void *pop(struct Node** head_ref)
+{
+    struct Node *current_node = (*head_ref);
+    assert(current_node != NULL);
+    void *result = current_node->data;
+    (*head_ref) = current_node->next;
+    free(current_node);
+    return result;
+}
 
-    char *string = malloc(fsize + 1);
-    fread(string, fsize, 1, f);
-    fclose(f);
-    //printf("Retrieved  %zu :\n", fsize);
-     string[fsize] = 0;
-    int i, word_start, word_count = 0;
-
-    for(i = 0; i < fsize; i++)
+// Finds last element of linked list referenced by node
+struct Node* tail_of(struct Node *node)
+{
+    while (node->next != NULL)
     {
-        if (string[i] == '\n')
-        {
-            word_count++;
-        }
+        node = node->next;
     }
-    //printf("Retrieved lines %zu :\n", word_count);
+    return node;
 }
+# pragma endregion Basic Data structures and memory management routines
 
+struct SearchTask {
+    int id;  // job id
 
-void processFile_fgets()
-{
-    FILE *f = fopen("lemmad.txt", "rb");
+    // data about search area
+    unsigned char *data; // text to be searched from
+    int start; // start position of search scope
+    int end; // start position of search scope
 
-    // 0.024
-    #define MAX_SIZE 1000
-    char line[MAX_SIZE];
-    int counter = 0; /*Number of lines*/
+    // data about the anagram searched
+    int anagram_length;
+    // Here we store how many times each character is used.
+    // For searched word "foo" char_counts is filled with zeros except
+    // char_counts['f'] == 1 and char_counts['o'] == 2
+    unsigned char* char_counts;
+    int diff_char_count; // how many different characters anagram contains
+    // Here we enumerate which characters are used in anagram, so we don't have to
+    // scan whole character map but only the ones used.
+    // For searched word "foo", char_counts_guide[0] refers to 'f', char_counts_guide[1] refers to 'o'.
+    unsigned char* char_counts_guide;
 
-    while(fgets(line, sizeof(line), f) != NULL){
-    //    counter++;
-    }
+    // buffer to store search results
+    struct Node *result;
+};
 
-    fclose(f);
-}
-
-
-void processFile_getline()
-{
-//    int targetChars[256];
-//    targetChars['i'] = 1;
-//
-    FILE *fp;
-    char *line = NULL;
-    size_t len = 0;
-    ssize_t read;
-
-   fp = fopen("lemmad.txt", "r");
-//    if (fp == NULL)
-//        exit(EXIT_FAILURE);
-
-   while ((read = getline(&line, &len, fp)) != -1) {
-//        if (read == TARGET_LENGTH)
-//        {
-//            printf("Retrieved line of length %zu :\n", read);
-//            printf("%s", line);
-//        }
-   }
-   free(line);
-   fclose(fp);
-}
-
-void processFile_memmap(char * file_name)
-{
-    // 0.0057
-    struct stat s;
-    //const char * file_name = "c:\\temp\\lemmad.txt";
-    //const char * file_name = "9x.txt";
-    //const char * file_name = "lemmad2.txt";
-    int fd = open (file_name, O_RDONLY);
-
-    /* Get the size of the file. */
-    int status = fstat (fd, & s);
-    size = s.st_size;
-
-    file_content = (char *) mmap (0, size, PROT_READ, MAP_PRIVATE, fd, 0);
-//    int word_start, word_count = 0;
-//    for (int i = 0; i < size; i++) {
-//        if (f[i] == '\n')
-//        {
-//            word_count++;
-//        }
-//    }
-//    int word_start, word_count = 0;
-//    for (int i = 0; i < size; i++) {
-//        printf("%c", f[i]);
-//    }
-
-}
-
-
-#define NUM_THREADS 2
-
-void *perform_work(void *arguments){
-  struct Segment segment = *((struct Segment *)arguments);
-  printf("THREAD %d: Started working on bytes [%d..%d]\n", segment.id, segment.start, segment.end);
-    unsigned char local_mask[256];
-    int word_start = segment.start;
-    for (int i = segment.start; i <= segment.end; i++) {
-        switch(segment.data[i])
+void *perform_work(void *arguments) {
+    // Searching for anagrams effectively is done so that the more expensive comparisions are
+    // skipped if no hope for match. Fail as fast as possible.
+    // So, first we compare the phrase length against target, next we check whether the
+    // characters used match and finally count the characters.
+    struct SearchTask *task = arguments;
+//    printf("THREAD %d: Started working on bytes [%d..%d]\n", task->id, task->start, task->end);
+    unsigned char match_char_counts[256];
+    int line_start_idx = task->start;
+    for (int i = task->start; i <= task->end; i++) {
+        switch(task->data[i])
         {
-            case '\r':
-            case '\n':
-                //printf("\n%d:", i+1);
-                if (segment.anagram_length == i - word_start)
+        case '\r':
+        case '\n':
+            // look only lines of same length
+            if (task->anagram_length == i - line_start_idx)
+            {
+                // printf("Found candidate of same length at position %d", i);
+                int found = 1;
+                for(int j = line_start_idx; j < i; j++)
                 {
-                    // printf("Found candidate of same length ");
-                    int found = 1;
-                    for(int j = word_start; j < i; j++)
+                    // on first non-matching character go to next line
+                    if(!task->char_counts[task->data[j]]) {
+                        found = 0;
+                        break;
+                    }
+                }
+                if (found) {
+                    // here we check that match candidate contains the same amount of all characters
+                    for(int j = 0; j < task->diff_char_count; j++) {
+                        match_char_counts[task->char_counts_guide[j]] = 0;
+                    }
+                    for(int j = line_start_idx; j < i; j++)
                     {
-                        //printf("%c", segment.data[j]);
-                        if(!mask[segment.data[j]]){
+                        match_char_counts[task->data[j]]++;
+                    }
+                    for(int j = 0; j < task->diff_char_count; j++) {
+                        if (match_char_counts[task->char_counts_guide[j]] !=
+                                task->char_counts[task->char_counts_guide[j]]) {
                             found = 0;
                             break;
                         }
                     }
-                    if (found){
-                        for(int j = word_start; j < i; j++){
-                            printf("%c", segment.data[j]);
-                        }
-                        printf(" Character set MATCH\n");
-                        // count characters
-                        for(int j = 0; j< used_chars; j++){
-                            local_mask[mask_index[j]] = 0;
-                        }
-                        for(int j = word_start; j < i; j++)
-                        {
-                            local_mask[segment.data[j]]++;
-                        }
-                        for(int j = 0; j< used_chars; j++){
-                            if (local_mask[mask_index[j]] != mask[mask_index[j]]){
-                                found = 0;
-                                break;
-                            }
-                        }
-                    }
-                    if (found){
-                        printf(" ANAGRAM MATCH\n");
-                    }
-                    else{
-                        //printf("... No match\n");
-                    }
-                    //printf("\n");
                 }
-                word_start = i + 1;
-                break;
-            default:
-                break;
-                //printf("%c", segment.data[i]);
-                //printf("%d ", i);
+                if (found) {
+                    // extract the match to result list
+                    char *match = (char *)SAFEMALLOC(task->anagram_length+1);
+                    strncpy(match, &task->data[line_start_idx], task->anagram_length);
+                    match[task->anagram_length] = 0;
+//                        printf(" Thread %d found ANAGRAM MATCH at position %d: %s\n",
+//                            task->id, line_start_idx, match);
+                    push(&task->result, match);
+                }
+            }
+            line_start_idx = i + 1;
+            break;
         }
     }
-  //printf("THREAD %d: Ended.\n", segment.id);
+//    printf("THREAD %d: Ended.\n", task->id);
 }
 
-void doit(char * anagram)
+// Searches anagrams from file_content and returns all matches as linked list.
+struct Node *search_anagrams_parallel(char *anagram, int thread_count, char *file_content, int file_size)
 {
-  printf("Searching for %s\n", anagram);
-  for (int i = 0; anagram[i] != 0; i++){
-    mask[anagram[i]]++;
-  }
-  // build index for mask
-  used_chars = 0;
-  for (int i = 0; i<256; i++){
-//    printf("%d", mask[i]);
-    if (mask[i]){
-        used_chars++;
-        mask_index[used_chars-1] = i;
+    struct Node *result = NULL;
+
+    // build up the search heuristics all the tasks are using
+    unsigned char char_counts[256] = {0};
+    unsigned char char_counts_guide[256];
+    int diff_char_count;
+    for (int i = 0; anagram[i] != 0; i++) {
+        char_counts[anagram[i]]++;
     }
-  }
-
-  pthread_t threads[NUM_THREADS];
-  int segment_size = size/NUM_THREADS;
-  int next_segment_start = 0;
-  int segment_end = 0;
-  struct Segment thread_segments[NUM_THREADS];
-
-  //create all threads one by one
-  for (int i = 0; i < NUM_THREADS; i++) {
-    if (i == NUM_THREADS - 1)
-    {
-        segment_end = size-1;
-    } else
-    {
-        segment_end = next_segment_start + segment_size;
-        // align the segments with line breaks
-        while(segment_end < size && file_content[segment_end] != '\n')
-        {
-            segment_end++;
+    // build index for char_counts
+    diff_char_count = 0;
+    for (int i = 0; i<256; i++) {
+        if (char_counts[i]) {
+            diff_char_count++;
+            char_counts_guide[diff_char_count-1] = i;
         }
     }
-    thread_segments[i].id=i;
-    thread_segments[i].start = next_segment_start;
-    thread_segments[i].end = segment_end;
-    thread_segments[i].data = file_content;
-    thread_segments[i].anagram_length = strlen(anagram);
-//    printf("IN MAIN: Creating thread %d (bytes %d .. %d)\n", i, next_segment_start, segment_end);
-    assert(!pthread_create(&threads[i], NULL, perform_work, &thread_segments[i]));
-    next_segment_start = segment_end + 1;
-  }
 
-  //printf("IN MAIN: All threads are created.\n");
+    int segment_size = file_size/thread_count;
+    int next_segment_start = 0;
+    int segment_end = 0;
+    struct SearchTask tasks[thread_count];
+    pthread_t threads[thread_count];
 
-  //wait for each thread to complete
-  for (int i = 0; i < NUM_THREADS; i++) {
-    assert(!pthread_join(threads[i], NULL));
-//    printf("IN MAIN: Thread %d has ended.\n", i);
-  }
+    for (int i = 0; i < thread_count; i++) {
+        if (i == thread_count - 1) {
+            segment_end = file_size - 1;
+        } else {
+            segment_end = next_segment_start + segment_size;
+            // we split the search area into equally sized segments and adjust the segments so
+            // that they do not split the lines
+            while(file_content[segment_end] != '\n' && segment_end < file_size) {
+                segment_end++;
+            }
+        }
+        tasks[i].id=i;
+        tasks[i].start = next_segment_start;
+        tasks[i].end = segment_end;
+        tasks[i].data = file_content;
+        tasks[i].anagram_length = strlen(anagram);
+        tasks[i].result = NULL;
+        tasks[i].char_counts = &char_counts[0];
+        tasks[i].char_counts_guide = &char_counts_guide[0];
+        tasks[i].diff_char_count = diff_char_count;
+        // printf("IN MAIN: Creating thread %d (bytes %d .. %d)\n", i, next_segment_start, segment_end);
+        assert(!pthread_create(&threads[i], NULL, perform_work, &tasks[i]));
+        next_segment_start = segment_end + 1;
+    }
 
-//  printf("MAIN program has ended.\n");
+    // wait for each thread to complete and merge all results
+    for (int i = 0; i < thread_count; i++) {
+        assert(!pthread_join(threads[i], NULL));
+        if (tasks[i].result != NULL) {
+            tail_of(tasks[i].result)->next = result;
+            result = tasks[i].result;
+        }
+    }
+    return result;
 }
-#define MAXCHAR 1000
 
 
 int main(int argc, char **argv)
 {
-    struct timeval tval_before, tval_after, tval_result;
+    // start the stopwatch
+    struct timeval tval_before;
     gettimeofday(&tval_before, NULL);
 
-//    FILE *fp;
-//    char str[MAXCHAR];
-//    char* filename = "lemmad.txt";
-//
-//    fp = fopen(filename, "r");
-////    if (fp == NULL){
-////        printf("Could not open file %s",filename);
-////        return 1;
-////    }
-//    while (fgets(str, MAXCHAR, fp) != NULL) {}
-//        //printf("%s", str);
-//    fclose(fp);
+    if (argc != 3)
+        handle_error("Usage: <dictionary path> <search string>");
 
-//    FILE *fp;
-//    char *line = NULL;
-//    size_t len = 0;
-//    ssize_t read;
-//
-//   fp = fopen("lemmad.txt", "r");
-//    if (fp == NULL)
-//        exit(EXIT_FAILURE);
-//
-//   while ((read = getline(&line, &len, fp)) != -1) {
-//        // printf("Retrieved line of length %zu :\n", read);
-//        //printf("%s", line);
-//   }
-//   free(line);
-//   fclose(fp);
+    char* file_name = argv[1];
 
-//    pthread_t thread_id;
-//    printf("Before Thread\n");
-//    pthread_create(&thread_id, NULL, myThreadFun, NULL);
-//    pthread_join(thread_id, NULL);
-//    printf("After Thread\n");
-//    doit();
-    // processFile_getline();      // 0.022
-    // processFile_fgets();        // 0.024
-     processFile_memmap(argv[1]);       // 0.0057
-    // processFile_singlebuffer(); // 0.0067
-    doit(argv[2]);
+    // read in the file as memory map
+    struct stat s;
+    int fd = open(file_name, O_RDONLY);
+    if (fd == -1)
+        handle_error("open");
+    if (fstat(fd, &s) == -1)  // read file size
+        handle_error("fstat");
+    char *file_content = mmap(0, s.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (file_content == MAP_FAILED)
+        handle_error("mmap");
 
-   gettimeofday(&tval_after, NULL);
-   timersub(&tval_after, &tval_before, &tval_result);
-   printf("Time elapsed: %ld.%06ld\n", (long int)tval_result.tv_sec, (long int)tval_result.tv_usec);
+    // search the file in parallel using all available CPU cores
+    int cpu_count = get_nprocs();
+    struct Node* result = search_anagrams_parallel(argv[2], cpu_count, file_content, s.st_size);
+    if (munmap(file_content, s.st_size) ==-1)
+        handle_error("munmap");
 
-   exit(EXIT_SUCCESS);
+    // stop the stopwatch
+    struct timeval tval_after, tval_result;
+    gettimeofday(&tval_after, NULL);
+    timersub(&tval_after, &tval_before, &tval_result);
+
+    // print out the result
+    printf("%ld", 1000000 * (long int)tval_result.tv_sec + (long int)tval_result.tv_usec);
+    while (result != NULL)
+    {
+        char *match = pop(&result);
+        printf(",%s", match);
+        free(match);
+    }
+    exit(EXIT_SUCCESS);
 }

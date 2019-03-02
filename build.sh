@@ -1,0 +1,1 @@
+gcc anagram.c -lpthread -o anagram
