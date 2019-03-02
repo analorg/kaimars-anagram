@@ -201,7 +201,6 @@ struct Node *search_anagrams_parallel(char *anagram, int thread_count, char *fil
         tasks[i].char_counts = &char_counts[0];
         tasks[i].char_counts_guide = &char_counts_guide[0];
         tasks[i].diff_char_count = diff_char_count;
-        // printf("IN MAIN: Creating thread %d (bytes %d .. %d)\n", i, next_segment_start, segment_end);
         assert(!pthread_create(&threads[i], NULL, perform_work, &tasks[i]));
         next_segment_start = segment_end + 1;
     }
