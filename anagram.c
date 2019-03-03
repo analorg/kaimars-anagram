@@ -20,7 +20,7 @@ static void* safe_malloc(size_t n, unsigned long line)
     void* p = malloc(n);
     if (!p)
     {
-        fprintf(stderr, "[%s:%ul]Out of memory(%ul bytes)\n",
+        fprintf(stderr, "[%s:%lu]Out of memory(%lu bytes)\n",
                 __FILE__, line, (unsigned long)n);
         exit(EXIT_FAILURE);
     }
@@ -93,16 +93,19 @@ struct SearchTask {
     struct Node *result;
 };
 
-void *perform_work(void *arguments) {
+void *search_anagrams(void *arguments) {
     // Searching for anagrams effectively is done so that the more expensive comparisions are
     // skipped if no hope for match. Fail as fast as possible.
     // So, first we compare the phrase length against target, next we check whether the
     // characters used match and finally count the characters.
     struct SearchTask *task = arguments;
-//    printf("THREAD %d: Started working on bytes [%d..%d]\n", task->id, task->start, task->end);
+    // printf("THREAD %d: Started working on bytes [%d..%d]\n", task->id, task->start, task->end);
+    // printf("THREAD %d: diff_char_count:%d, char_count: ", task->id, task->diff_char_count);
+    // for (int i=0; i<256; i++)  printf(" %d", task->char_counts[i]);
     unsigned char match_char_counts[256];
     int line_start_idx = task->start;
     for (int i = task->start; i <= task->end; i++) {
+        // printf(" %c[%d]", task->data[i], task->data[i]);
         switch(task->data[i])
         {
         case '\r':
@@ -110,7 +113,7 @@ void *perform_work(void *arguments) {
             // look only lines of same length
             if (task->anagram_length == i - line_start_idx)
             {
-                // printf("Found candidate of same length at position %d", i);
+                // printf("Found candidate of same length at position %d.", line_start_idx);
                 int found = 1;
                 for(int j = line_start_idx; j < i; j++)
                 {
@@ -142,8 +145,8 @@ void *perform_work(void *arguments) {
                     char *match = (char *)SAFEMALLOC(task->anagram_length+1);
                     strncpy(match, &task->data[line_start_idx], task->anagram_length);
                     match[task->anagram_length] = 0;
-//                        printf(" Thread %d found ANAGRAM MATCH at position %d: %s\n",
-//                            task->id, line_start_idx, match);
+                    // printf(" Thread %d found ANAGRAM MATCH at position %d: %s\n",
+                    //     task->id, line_start_idx, match);
                     push(&task->result, match);
                 }
             }
@@ -151,11 +154,10 @@ void *perform_work(void *arguments) {
             break;
         }
     }
-//    printf("THREAD %d: Ended.\n", task->id);
 }
 
 // Searches anagrams from file_content and returns all matches as linked list.
-struct Node *search_anagrams_parallel(char *anagram, int thread_count, char *file_content, int file_size)
+struct Node *search_anagrams_parallel(unsigned char *anagram, int thread_count, unsigned char *file_content, int file_size)
 {
     struct Node *result = NULL;
 
@@ -182,15 +184,14 @@ struct Node *search_anagrams_parallel(char *anagram, int thread_count, char *fil
     pthread_t threads[thread_count];
 
     for (int i = 0; i < thread_count; i++) {
-        if (i == thread_count - 1) {
-            segment_end = file_size - 1;
-        } else {
-            segment_end = next_segment_start + segment_size;
-            // we split the search area into equally sized segments and adjust the segments so
-            // that they do not split the lines
-            while(file_content[segment_end] != '\n' && segment_end < file_size) {
-                segment_end++;
-            }
+        segment_end = next_segment_start + segment_size;
+        // we split the search area into equally sized segments and adjust the segments so
+        // that they do not split the lines
+        while(file_content[segment_end] != '\n' && segment_end < file_size) {
+            segment_end++;
+        }
+        if (segment_end >= file_size) {
+            segment_end = file_size-1;
         }
         tasks[i].id=i;
         tasks[i].start = next_segment_start;
@@ -201,8 +202,11 @@ struct Node *search_anagrams_parallel(char *anagram, int thread_count, char *fil
         tasks[i].char_counts = &char_counts[0];
         tasks[i].char_counts_guide = &char_counts_guide[0];
         tasks[i].diff_char_count = diff_char_count;
-        assert(!pthread_create(&threads[i], NULL, perform_work, &tasks[i]));
+        assert(!pthread_create(&threads[i], NULL, search_anagrams, &tasks[i]));
         next_segment_start = segment_end + 1;
+        if (next_segment_start >= file_size) {
+            next_segment_start = file_size-1;
+        }
     }
 
     // wait for each thread to complete and merge all results
@@ -223,9 +227,11 @@ int main(int argc, char **argv)
     struct timeval tval_before;
     gettimeofday(&tval_before, NULL);
 
-    if (argc != 3)
-        handle_error("Usage: <dictionary path> <search string>");
-
+    if (argc != 3) {
+        printf("Usage: %s <path to dictionary file> <search string>\n", argv[0]);
+        printf("It is assumed that both inputs use same single-byte character encoding.\n");
+        exit(EXIT_FAILURE);
+    }
     char* file_name = argv[1];
 
     // read in the file as memory map
